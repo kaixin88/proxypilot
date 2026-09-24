@@ -1,7 +1,9 @@
 # ProxyPilot · 一键代理控制台
 
-> Windows 10 / 11 通用的图形化代理工具。自动获取云端节点、自动剔除失效节点，
-> 一键开关系统代理，支持「全局 / 智能分流 / 自定义规则」三种模式。
+> Windows 10 / 11 通用的图形化代理工具。**开箱即用、零配置**：
+> 自动获取云端节点、自动剔除失效节点、一键开关系统代理，
+> 支持「全局 / 智能分流 / 自定义规则」三种模式。
+> 程序为**独立原生窗口**，不依赖任何外部浏览器。
 
 本项目参考 `Chrome153_AllNew_2026.9.12` 项目中的节点更新机制实现：
 
@@ -28,7 +30,7 @@ ProxyPilot 把这些「ip 更新源」**全部并发抓取**（共 26 个来源�
 
 ### 1. 自动获取节点
 - 并发抓取全部云端源（每源含主源 + 2 个备用镜像），任一可用即成功。
-- 解析 7 种配置格式：Clash.Meta YAML、Xray JSON、sing-box JSON、
+- 解析 8 种配置格式：Clash.Meta YAML、Xray JSON、sing-box JSON、
   hysteria JSON、hysteria2 JSON、juicity JSON、naiveproxy JSON、mieru JSON。
 - 按「协议 + 服务器 + 端口」指纹去重合并。
 - **上次的节点会被保留**：某次抓取失败也不会把已有节点清空。
@@ -36,12 +38,10 @@ ProxyPilot 把这些「ip 更新源」**全部并发抓取**（共 26 个来源�
   改用 UDP 可达性探测，避免用 TCP 误判成不可用。
 - 不可用的节点自动剔除，可用节点按延迟从低到高排序。
 
-> 实测效果：26/26 个来源可用，合并出 14 个节点，覆盖
-> `hysteria`、`hysteria2`、`juicity`、`mieru`、`naiveproxy`、`vless` 六种协议。
-
 ### 2. 一键开关代理
 - 点击「开启代理」：启动代理内核 → 设置 Windows 系统代理。
 - 点击「关闭代理」：停止内核 → **精确还原**你原来的系统代理设置（含原本的值与开关状态）。
+- 退出程序时会自动关闭代理并还原，不留残留。
 
 ### 3. 三种代理模式
 | 模式 | 说明 |
@@ -60,33 +60,38 @@ google.com                 # 域名后缀匹配
 ```
 规则保存在本地文件中，修改后**立即生效**，无需重开代理。
 
+### 4. 协议兼容自动处理
+程序内置内核能力表：遇到当前内核不支持的协议节点时，会**自动切换到支持的内核**，
+再不行则自动挑选一个兼容节点；界面上不支持的节点会**置灰并提示**，不会让你踩坑。
+
 ---
 
 ## 使用方法
 
-### 第一步：放置代理内核
-ProxyPilot 自身只负责「节点管理 + 系统代理 + 规则分流」，
-真正转发流量的是内核程序。请把下面**任意一个**内核放到程序目录下的 `bin\` 文件夹：
+### 第一步：解压即用
+把 `ProxyPilot-win.zip` 解压到任意目录，你会看到：
 
-- `clash.meta.exe`（推荐，支持协议最全，含 hysteria / hysteria2）
-  - 可从你已有的 `Chrome153_AllNew_2026.9.12\clash.meta\` 目录复制，
-    重命名为 `clash.meta.exe`
-- `xray.exe`（支持 vless / vmess / trojan / ss）
-  - 可从 `Chrome153_AllNew_2026.9.12\Xray\` 复制，同时把
-    `geoip.dat`、`geosite.dat` 一起放到 `bin\`（分流规则需要）
+```
+ProxyPilot.exe        ← 双击运行（原生窗口，无需浏览器）
+ProxyPilot-debug.exe  ← 排错用，带控制台输出
+bin\
+  clash.meta.exe      ← 已内置代理内核（Mihomo，支持全部 18 种协议）
+README.md
+```
 
-> 程序启动界面会显示是否检测到内核。没有内核也能打开界面、获取和浏览节点，
-> 只是无法真正开启代理。
+**无需任何手动配置**，内核已经随包附带。程序启动时若检测到同目录没有内核，
+会尝试从自带资源中释放一份出来。
 
-### 第二步：运行
-双击 `ProxyPilot.exe`，浏览器会自动打开控制台（`http://127.0.0.1:17987`）。
-若未自动打开，手动访问该地址即可。
+### 第二步：使用
+双击 `ProxyPilot.exe` 弹出程序窗口，然后：
 
-### 第三步：使用
 1. 点右上角 **获取节点** → 自动拉取云端全部节点并测速排序。
-2. 在节点列表里点选一个节点。
-3. 选择代理模式。
-4. 点 **开启代理**。用完点 **关闭代理**。
+2. 在节点列表里点选一个节点（置灰的表示当前内核不支持，换一个即可）。
+3. 选择代理模式（全局 / 智能分流 / 自定义规则）。
+4. 点 **开启代理**。用完点 **关闭代理**，或直接关闭窗口 / 点「退出程序」。
+
+> **再次双击 `ProxyPilot.exe`**：如果程序已经在运行，会直接把已有窗口
+> 带到前台，不会重复启动、也不会打不开。
 
 ---
 
@@ -94,7 +99,7 @@ ProxyPilot 自身只负责「节点管理 + 系统代理 + 规则分流」，
 
 ```
 ProxyPilot.exe
-bin\                     ← 放内核（clash.meta.exe 或 xray.exe）
+bin\                     ← 代理内核（已内置 clash.meta.exe）
 data\
   nodes.json             ← 节点缓存与可用状态
   runtime\               ← 运行时生成的配置
@@ -105,8 +110,15 @@ README.md
 
 ## 常见问题
 
-**Q: 点开启代理提示「未找到内核」？**
-把 `clash.meta.exe` 或 `xray.exe` 放进 `bin\` 目录即可，界面里点「打开内核目录」可直接跳转。
+**Q: 双击后没反应 / 程序起不来？**
+- 先看程序目录下有没有 `crash.log`，里面有详细报错。
+- 如果之前已经打开过一次，第二次双击会把已有窗口带到前台。
+- 极少数精简版系统缺少 **WebView2 运行时**，此时程序会弹窗提示并自动改用浏览器打开控制台；
+  也可自行安装「Microsoft Edge WebView2 运行时」后重试。
+
+**Q: 窗口里提示「未找到内核」？**
+把 `clash.meta.exe` 放进程序目录的 `bin\` 文件夹即可（正常情况下压缩包已自带）。
+界面里点「打开内核目录」可直接跳转。
 
 **Q: 节点全是「不可用」？**
 说明当前网络环境无法直连这些服务器（需要先有其他网络通道），或云端节点已过期。
@@ -123,17 +135,27 @@ README.md
 
 ## 编译
 
+需要 **cgo**（界面基于 WebView2，用于生成原生窗口）：
+
 ```bash
+# 需要 MinGW-w64（含 g++）
+set CGO_ENABLED=1
 go build -trimpath -ldflags "-s -w -H=windowsgui" -o ProxyPilot.exe .
 ```
 
-或直接推送代码到 GitHub，`Actions` 会自动编译并输出 `ProxyPilot.exe` 与 `ProxyPilot-win.zip` 压缩包。
+或直接推送代码到 GitHub，`Actions` 会自动用 `windows-latest` 编译并输出
+`ProxyPilot.exe`、`ProxyPilot-debug.exe` 与打包好内核的 `ProxyPilot-win.zip`。
 
 ---
 
 ## 技术说明
 
-- 纯 Go 实现，`amd64` 静态编译，无外部依赖，单文件运行。
-- 系统代理通过写注册表 `HKCU\...\Internet Settings` + 调用 `InternetSetOptionW` 刷新，与系统「网络设置」完全一致。
+- Go + WebView2 原生窗口（`github.com/webview/webview_go`），**不依赖外部浏览器**。
+- 代理内核内置 Mihomo (Clash.Meta) v1.19.31，实测支持全部 18 种协议
+  （`ss / ssr / vmess / vless / trojan / snell / http / socks5 / hysteria / hysteria2 /
+  tuic / anytls / mieru / wireguard / ssh / direct / naiveproxy / juicity / shadowquic`）。
+- 内核配置强制 `geodata-mode` 本地模式，避免联网下载 GeoIP 数据导致启动卡死。
+- 系统代理通过写注册表 `HKCU\...\Internet Settings` + 调用 `InternetSetOptionW` 刷新，
+  与系统「网络设置」完全一致。
 - PAC 服务内置在程序中（`http://127.0.0.1:7899/proxy.pac`），规则热更新。
-- 界面为内嵌的本地网页，打开即用，无需安装。
+- 单实例运行：重复启动会把已有窗口带到前台（Win32 `AttachThreadInput` + `SetForegroundWindow`）。
