@@ -40,7 +40,26 @@ jobs:
           New-Item -ItemType Directory -Force -Path pkg/bin | Out-Null
           Copy-Item dist/ProxyPilot.exe pkg/ProxyPilot.exe
           Copy-Item README.md pkg/README.md
+          # bin 目录占位说明，提示用户把内核放进去
+          Set-Content -Path pkg/bin/把内核放这里.txt -Encoding UTF8 -Value @'
+把代理内核放到这个 bin 目录里，然后重新启动 ProxyPilot.exe。
+
+推荐（支持协议最全，含 hysteria / hysteria2）:
+  clash.meta.exe
+
+或者（支持 vless / vmess / trojan / ss）:
+  xray.exe
+  geoip.dat
+  geosite.dat
+
+可以从你已有的 Chrome153_AllNew_2026.9.12 目录里复制：
+  Chrome153_AllNew_2026.9.12\clash.meta\clash.meta-windows-386.exe  ->  bin\clash.meta.exe
+  Chrome153_AllNew_2026.9.12\Xray\xray.exe                          ->  bin\xray.exe
+'@
           Compress-Archive -Path pkg/* -DestinationPath dist/ProxyPilot-win.zip -Force
+          Write-Output "--- package contents ---"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::OpenRead("dist/ProxyPilot-win.zip").Entries | ForEach-Object { Write-Output "  $($_.FullName) ($($_.Length) bytes)" }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
