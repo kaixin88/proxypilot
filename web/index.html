@@ -105,6 +105,8 @@
   .node:last-child{border-bottom:none}
   .node:hover{background:#fafbfc}
   .node.sel{background:var(--brand-soft)}
+  .node.unsup{opacity:.5;cursor:not-allowed;background:#fbfbfc}
+  .node.unsup:hover{background:#fbfbfc}
   .node .radio{
     width:16px;height:16px;border-radius:50%;border:2px solid #cfd5dd;flex:none;position:relative;
   }
@@ -242,6 +244,7 @@
       <h2><span class="ico">🧩</span>运行环境</h2>
       <div class="row">
         <button class="btn-ghost" id="btnOpenBin">打开内核目录</button>
+        <button class="btn-ghost" id="btnExit" title="关闭代理并退出程序">退出程序</button>
       </div>
     </div>
     <div class="card-body">
@@ -344,12 +347,15 @@ function renderNodes(){
     box.innerHTML = '<div class="empty">暂无节点，点击右上角「获取节点」自动拉取</div>';
     return;
   }
+  const unsup = nodes.filter(n=>n.supported === false).length;
   box.innerHTML = nodes.map(n=>{
     const lat = n.latency;
     let latCls = '', latTxt = '未测';
     if(lat === -1){ latCls='bad'; latTxt='不可用'; }
     else if(lat > 0){ latCls = lat<300?'good':(lat<800?'mid':'bad'); latTxt = lat+' ms'; }
-    return `<div class="node ${n.id===state.nodeID?'sel':''}" data-id="${n.id}">
+    const bad = n.supported === false;
+    if(bad){ latCls='bad'; latTxt='内核不支持'; }
+    return `<div class="node ${n.id===state.nodeID?'sel':''} ${bad?'unsup':''}" data-id="${n.id}" data-bad="${bad?1:0}">
       <div class="radio"></div>
       <div class="meta">
         <div class="name">${esc(n.name)}</div>
@@ -358,11 +364,19 @@ function renderNodes(){
       <span class="tag ${esc(n.protocol)}">${esc(n.protocol)}</span>
       <span class="lat ${latCls}">${latTxt}</span>
     </div>`;
-  }).join('');
+  }).join('') + (unsup ? `<div class="empty" style="font-size:12px;padding:8px">有 ${unsup} 个节点当前内核不支持，已置灰。可换用其它节点。</div>` : '');
 
   box.querySelectorAll('.node').forEach(el=>{
     el.onclick = async ()=>{
-      await api('/api/nodes/select', {id: el.dataset.id});
+      if(el.dataset.bad === '1'){
+        toast('当前内核不支持该协议，已跳过');
+        return;
+      }
+      const r = await api('/api/nodes/select', {id: el.dataset.id});
+      if(r && r.ok === false){
+        toast(r.error || '选择失败');
+        return;
+      }
       state.nodeID = el.dataset.id;
       renderNodes(); render();
       toast('已选择节点' + (state.enabled?'，正在切换':''));
@@ -427,6 +441,12 @@ $('#btnSaveRules').onclick = async ()=>{
 };
 
 $('#btnOpenBin').onclick = ()=> api('/api/openfolder', {which:'bin'});
+
+$('#btnExit').onclick = async ()=>{
+  if(!confirm('退出会关闭代理并还原系统代理设置，确定要退出吗？')) return;
+  try{ await api('/api/exit', {}); }catch(e){}
+  close();
+};
 
 // ---- 轮询 ----
 loadNodes().then(refresh);
