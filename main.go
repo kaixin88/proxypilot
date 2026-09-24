@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,11 +39,36 @@ type App struct {
 }
 
 func main() {
+	// 把 panic 记到文件，GUI 版本没有控制台，否则崩溃无迹可查
+	crashLog, _ := os.CreateTemp("", "proxypilot-crash-*.log")
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("PANIC: %v\n\n%s\n", r, debug.Stack())
+			fmt.Fprint(os.Stderr, msg)
+			if crashLog != nil {
+				crashLog.WriteString(msg)
+				crashLog.Close()
+			}
+			// 同时落盘到可执行文件目录，方便用户提供
+			if exe, err := os.Executable(); err == nil {
+				_ = os.WriteFile(filepath.Join(filepath.Dir(exe), "crash.log"), []byte(msg), 0o644)
+			}
+			os.Exit(2)
+		}
+	}()
+
 	exePath, _ := os.Executable()
 	root := filepath.Dir(exePath)
 	// 若在开发环境运行，用可执行文件目录下的 data
 	dataDir := filepath.Join(root, "data")
 	_ = os.MkdirAll(dataDir, 0o755)
+
+	// 单实例：已有实例在跑时，直接把已有窗口调到前台，本进程退出。
+	// 否则用户重复双击会因端口被占而静默退出，看起来像"打不开"。
+	if runningInstance() {
+		focusExistingWindow()
+		return
+	}
 
 	app := &App{
 		nodes:      NewNodeManager(dataDir),
@@ -63,6 +90,7 @@ func main() {
 
 	// 后台静默同步一次节点
 	go func() {
+		defer recoverToFile()
 		time.Sleep(1500 * time.Millisecond)
 		if len(app.nodes.List()) == 0 {
 			_, _ = app.nodes.SyncFull(true)
@@ -74,13 +102,78 @@ func main() {
 
 	addr := "127.0.0.1:17987"
 	fmt.Printf("ProxyPilot 已启动: http://%s\n", addr)
-	go openBrowser("http://" + addr)
+
+	// 收到 Ctrl+C / 任务管理器"结束任务"信号时，先清理再退出
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		<-ch
+		app.cleanup()
+		os.Exit(0)
+	}()
 
 	srv := &http.Server{Addr: addr, Handler: mux}
-	if err := srv.ListenAndServe(); err != nil {
-		fmt.Println("服务启动失败:", err)
-		pause()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil {
+			if runningInstance() {
+				// 已有实例在跑：把它的窗口/控制台唤出来即可，本进程退出
+				openBrowser(consoleURL())
+				os.Exit(0)
+			}
+			fmt.Println("服务启动失败:", err)
+		}
+	}()
+
+	// 原生窗口（WebView2）；窗口关闭即退出程序并还原系统代理
+	runGUI(addr, func() {
+		app.cleanup()
+		os.Exit(0)
+	})
+}
+
+// recoverToFile 在 goroutine 里兜住 panic 并写文件，避免整个进程被拖死。
+func recoverToFile() {
+	if r := recover(); r != nil {
+		msg := fmt.Sprintf("PANIC(goroutine): %v\n\n%s\n", r, debug.Stack())
+		fmt.Fprint(os.Stderr, msg)
+		if exe, err := os.Executable(); err == nil {
+			f, err := os.OpenFile(filepath.Join(filepath.Dir(exe), "crash.log"),
+				os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if err == nil {
+				f.WriteString(msg)
+				f.Close()
+			}
+		}
 	}
+}
+
+// consoleURL 返回控制台地址。
+func consoleURL() string {
+	return "http://127.0.0.1:17987/"
+}
+
+// runningInstance 检查是否已有 ProxyPilot 实例在监听控制台端口。
+// 不只判断端口是否被占，还会校验响应确实是 ProxyPilot，避免误判其它程序。
+func runningInstance() bool {
+	return runningInstanceOn("127.0.0.1:17987")
+}
+
+// runningInstanceOn 检查指定地址上是否已有 ProxyPilot 实例在服务。
+func runningInstanceOn(addr string) bool {
+	c := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := c.Get("http://" + addr + "/api/state")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	buf := make([]byte, 512)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+	// /api/state 返回的 JSON 必含这些字段
+	return strings.Contains(body, "\"pacURL\"") && strings.Contains(body, "\"proxyPort\"")
 }
 
 func (a *App) autoSelectKernel() {
@@ -108,12 +201,39 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/rules", a.jsonHandler(a.handleRules))
 	mux.HandleFunc("/api/kernels", a.jsonHandler(a.handleKernels))
 	mux.HandleFunc("/api/openfolder", a.jsonHandler(a.handleOpenFolder))
+	mux.HandleFunc("/api/exit", a.jsonHandler(a.handleExit))
+}
+
+// handleExit 关闭代理、停掉内核并退出程序。
+func (a *App) handleExit(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"ok": true})
+	go func() {
+		time.Sleep(300 * time.Millisecond) // 等响应发出去
+		a.cleanup()
+		os.Exit(0)
+	}()
 }
 
 func (a *App) jsonHandler(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// 单个请求 panic 不应拖垮整个进程
+		defer func() {
+			if rec := recover(); rec != nil {
+				msg := fmt.Sprintf("PANIC(handler %s): %v\n\n%s\n", r.URL.Path, rec, debug.Stack())
+				fmt.Fprint(os.Stderr, msg)
+				if exe, err := os.Executable(); err == nil {
+					f, err := os.OpenFile(filepath.Join(filepath.Dir(exe), "crash.log"),
+						os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+					if err == nil {
+						f.WriteString(msg)
+						f.Close()
+					}
+				}
+				writeJSON(w, 500, map[string]any{"error": "内部错误，已记录日志"})
+			}
+		}()
 		fn(w, r)
 	}
 }
@@ -127,21 +247,21 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 	count, syncing, progress, last := a.nodes.Status()
 	a.mu.Lock()
 	st := map[string]any{
-		"enabled":    a.enabled,
-		"mode":       a.mode,
-		"nodeID":     a.nodeID,
-		"kernel":     a.kernelName,
-		"rules":      a.rules,
-		"lastErr":    a.lastErr,
-		"nodeCount":  count,
-		"syncing":    syncing,
-		"progress":   progress,
-		"lastSync":   last.Format("2006-01-02 15:04:05"),
-		"proxyPort":  localHTTPPort,
-		"socksPort":  localSOCKSPort,
-		"pacURL":     a.pac.URL(),
-		"kernels":    a.kernel.Available(),
-		"running":    a.kernel.Running(),
+		"enabled":     a.enabled,
+		"mode":        a.mode,
+		"nodeID":      a.nodeID,
+		"kernel":      a.kernelName,
+		"rules":       a.rules,
+		"lastErr":     a.lastErr,
+		"nodeCount":   count,
+		"syncing":     syncing,
+		"progress":    progress,
+		"lastSync":    last.Format("2006-01-02 15:04:05"),
+		"proxyPort":   localHTTPPort,
+		"socksPort":   localSOCKSPort,
+		"pacURL":      a.pac.URL(),
+		"kernels":     a.kernel.Available(),
+		"running":     a.kernel.Running(),
 		"systemProxy": a.sysproxy.Current(),
 	}
 	a.mu.Unlock()
@@ -149,17 +269,43 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleNodes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"nodes": a.nodes.List()})
+	a.mu.Lock()
+	kernelName := a.kernelName
+	a.mu.Unlock()
+	list := a.nodes.List()
+
+	type nodeView struct {
+		Node
+		Supported bool `json:"supported"`
+	}
+	views := make([]nodeView, 0, len(list))
+	for _, n := range list {
+		views = append(views, nodeView{Node: n, Supported: protocolSupported(kernelName, n.Protocol)})
+	}
+	writeJSON(w, 200, map[string]any{"nodes": views, "kernel": kernelName})
 }
 
 func (a *App) handleSelect(w http.ResponseWriter, r *http.Request) {
-	var req struct{ ID string `json:"id"` }
+	var req struct {
+		ID string `json:"id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "参数错误"})
 		return
 	}
-	if _, ok := a.nodes.Get(req.ID); !ok {
+	node, ok := a.nodes.Get(req.ID)
+	if !ok {
 		writeJSON(w, 404, map[string]any{"error": "节点不存在"})
+		return
+	}
+	a.mu.Lock()
+	kernelName := a.kernelName
+	a.mu.Unlock()
+	if !protocolSupported(kernelName, node.Protocol) {
+		writeJSON(w, 200, map[string]any{
+			"ok":    false,
+			"error": fmt.Sprintf("当前内核 %s 不支持 %s 协议，请换用其它节点", kernelName, node.Protocol),
+		})
 		return
 	}
 	a.mu.Lock()
@@ -200,9 +346,9 @@ func (a *App) handleProbe(w http.ResponseWriter, r *http.Request) {
 // handleOn 开启代理：启动内核 + 设置系统代理。
 func (a *App) handleOn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		NodeID string `json:"nodeId"`
-		Mode   string `json:"mode"`
-		Kernel string `json:"kernel"`
+		NodeID string   `json:"nodeId"`
+		Mode   string   `json:"mode"`
+		Kernel string   `json:"kernel"`
 		Rules  []string `json:"rules"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -298,7 +444,9 @@ func (a *App) handleKernels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Which string `json:"which"` }
+	var req struct {
+		Which string `json:"which"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	dir := a.workDir
 	switch req.Which {
@@ -335,19 +483,29 @@ func (a *App) start() error {
 	a.mu.Unlock()
 
 	node, ok := a.nodes.Get(nodeID)
-	if !ok {
+	if !ok || !protocolSupported(a.pickKernel(kernelName, node), node.Protocol) {
 		list := a.nodes.List()
 		if len(list) == 0 {
 			return fmt.Errorf("暂无可用节点，请先点击「获取节点」")
 		}
-		// 自动挑选第一个可用节点
-		node = list[0]
-		for _, n := range list {
-			if n.OK {
-				node = n
-				break
+		// 当前没选节点，或所选节点当前内核不支持 —— 自动挑一个兼容的
+		picked, found := pickCompatibleNode(list, kernelName)
+		if !found {
+			// 换成另一个内核再试
+			alt := "xray"
+			if strings.EqualFold(kernelName, "xray") {
+				alt = "clash.meta"
+			}
+			if _, avail := a.kernel.Available()[alt]; avail {
+				if p2, ok2 := pickCompatibleNode(list, alt); ok2 {
+					picked, found, kernelName = p2, true, alt
+				}
 			}
 		}
+		if !found {
+			return fmt.Errorf("当前内核不支持任何已有节点的协议，请更换内核或重新获取节点")
+		}
+		node = picked
 		a.mu.Lock()
 		a.nodeID = node.ID
 		a.mu.Unlock()
@@ -357,8 +515,13 @@ func (a *App) start() error {
 		node.Protocol = strings.ToLower(node.Protocol)
 	}
 
-	// 依据节点协议挑选合适内核（xray 不支持 hysteria 系）
+	// 依据节点协议挑选合适内核
 	kernelName = a.pickKernel(kernelName, node)
+
+	// 最终校验：内核必须支持该协议，否则给出明确原因而不是让内核静默崩溃
+	if !protocolSupported(kernelName, node.Protocol) {
+		return fmt.Errorf("内核 %s 不支持 %s 协议，请换一个节点或更换内核", kernelName, node.Protocol)
+	}
 
 	if err := a.kernel.Start(kernelName, node, mode, rules); err != nil {
 		return err
@@ -381,21 +544,16 @@ func (a *App) start() error {
 
 // pickKernel 若所选内核不支持该协议，自动切换到支持的内核。
 func (a *App) pickKernel(preferred string, node Node) string {
-	avail := a.kernel.Available()
-	p := strings.ToLower(node.Protocol)
-	xrayOK := map[string]bool{"vless": true, "vmess": true, "trojan": true, "ss": true, "shadowsocks": true}
-	clashOK := map[string]bool{"vless": true, "vmess": true, "trojan": true, "ss": true,
-		"shadowsocks": true, "hysteria": true, "hysteria2": true}
-
-	if preferred == "xray" && !xrayOK[p] {
-		if _, ok := avail["clash.meta"]; ok {
-			return "clash.meta"
-		}
+	if protocolSupported(preferred, node.Protocol) {
+		return preferred
 	}
-	if preferred == "clash.meta" && !clashOK[p] {
-		if _, ok := avail["xray"]; ok {
-			return "xray"
-		}
+	avail := a.kernel.Available()
+	alt := "xray"
+	if strings.EqualFold(preferred, "xray") {
+		alt = "clash.meta"
+	}
+	if _, ok := avail[alt]; ok && protocolSupported(alt, node.Protocol) {
+		return alt
 	}
 	return preferred
 }
@@ -469,4 +627,20 @@ func pause() {
 	fmt.Println("按回车退出...")
 	var b [1]byte
 	_, _ = os.Stdin.Read(b[:])
+}
+
+// cleanup 在进程退出前还原系统代理并停止内核，避免残留 xray/clash 进程
+// 与"代理已关但注册表还开着"的情况。多次调用是安全的。
+func (a *App) cleanup() {
+	a.mu.Lock()
+	snap := a.snapshot
+	wasEnabled := a.enabled
+	a.enabled = false
+	a.mu.Unlock()
+
+	if wasEnabled {
+		_ = a.sysproxy.Restore(snap)
+	}
+	a.kernel.Stop()
+	_ = a.sysproxy.Off()
 }
