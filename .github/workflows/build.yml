@@ -9,45 +9,73 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: false
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: true
 
-      - name: Build (windows/amd64)
+      - name: Prepare kernel (bundled or download)
         shell: pwsh
         run: |
-          $env:GOOS="windows"
-          $env:GOARCH="amd64"
-          $env:CGO_ENABLED="0"
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          $k = "bin/clash.meta.exe"
+          if ((Test-Path $k) -and ((Get-Item $k).Length -gt 20MB)) {
+            Write-Output "复用仓库内置内核: $((Get-Item $k).Length) bytes"
+          } else {
+            $url = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.31/mihomo-windows-amd64-compatible-v1.19.31.zip"
+            Write-Output "下载内核: $url"
+            Invoke-WebRequest -Uri $url -OutFile mihomo.zip -UseBasicParsing
+            Expand-Archive -Path mihomo.zip -DestinationPath mihomo_tmp -Force
+            $exe = Get-ChildItem mihomo_tmp -Filter "*.exe" | Select-Object -First 1
+            Copy-Item $exe.FullName $k -Force
+          }
+          Write-Output "内核大小: $((Get-Item $k).Length) bytes"
+          Get-ChildItem bin | Select-Object Name, Length
+
+      - name: Build (amd64, WebView2 native window, cgo)
+        shell: pwsh
+        run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "1"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           go build -trimpath -ldflags "-s -w -H=windowsgui" -o "dist/ProxyPilot.exe" .
-          Get-Item dist/ProxyPilot.exe | Select-Object Name,Length
+          Get-Item dist/ProxyPilot.exe | Select-Object Name, Length
 
-      - name: Build (windows/386 for older win10)
+      - name: Build (amd64, console debug variant)
         shell: pwsh
         run: |
-          $env:GOOS="windows"
-          $env:GOARCH="386"
-          $env:CGO_ENABLED="0"
-          go build -trimpath -ldflags "-s -w" -o "dist/ProxyPilot-386.exe" .
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "1"
+          go build -trimpath -ldflags "-s -w" -o "dist/ProxyPilot-debug.exe" .
 
-      - name: Package
+      - name: Package (all-in-one, zero config)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path pkg/bin | Out-Null
-          Copy-Item dist/ProxyPilot.exe pkg/ProxyPilot.exe
-          Copy-Item README.md pkg/README.md
-          Copy-Item bin/把内核放这里.txt pkg/bin/把内核放这里.txt
+          Copy-Item dist/ProxyPilot.exe       pkg/ProxyPilot.exe
+          Copy-Item dist/ProxyPilot-debug.exe pkg/ProxyPilot-debug.exe
+          Copy-Item README.md                 pkg/README.md
+          Copy-Item bin/clash.meta.exe        pkg/bin/clash.meta.exe
           Compress-Archive -Path pkg/* -DestinationPath dist/ProxyPilot-win.zip -Force
           Write-Output "--- package contents ---"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::OpenRead("dist/ProxyPilot-win.zip").Entries | ForEach-Object { Write-Output "  $($_.FullName) ($($_.Length) bytes)" }
+          [System.IO.Compression.ZipFile]::OpenRead("dist/ProxyPilot-win.zip").Entries |
+            ForEach-Object { Write-Output ("  {0} ({1:N0} bytes)" -f $_.FullName, $_.Length) }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ProxyPilot-windows
-          path: dist/*
+          path: |
+            dist/ProxyPilot.exe
+            dist/ProxyPilot-debug.exe
+            dist/ProxyPilot-win.zip
+          retention-days: 30
