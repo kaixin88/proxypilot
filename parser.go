@@ -502,8 +502,8 @@ func parseMieruJSON(src string, sourceLabel string) []Node {
 				Password string `json:"password"`
 			} `json:"user"`
 			Servers []struct {
-				IPAddress   string `json:"ipAddress"`
-				DomainName  string `json:"domainName"`
+				IPAddress    string `json:"ipAddress"`
+				DomainName   string `json:"domainName"`
 				PortBindings []struct {
 					Port     int    `json:"port"`
 					Protocol string `json:"protocol"`
