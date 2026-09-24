@@ -11,12 +11,12 @@ import (
 // SysProxy 管理 Windows 系统代理（即「设置 → 网络和 Internet → 代理」）。
 // 通过直接读写注册表 HKCU\...\Internet Settings 实现，避免引入第三方依赖。
 var (
-	advapi32           = syscall.NewLazyDLL("advapi32.dll")
-	procRegOpenKeyEx   = advapi32.NewProc("RegOpenKeyExW")
+	advapi32            = syscall.NewLazyDLL("advapi32.dll")
+	procRegOpenKeyEx    = advapi32.NewProc("RegOpenKeyExW")
 	procRegQueryValueEx = advapi32.NewProc("RegQueryValueExW")
-	procRegSetValueEx  = advapi32.NewProc("RegSetValueExW")
-	procRegDeleteValue = advapi32.NewProc("RegDeleteValueW")
-	procRegCloseKey    = advapi32.NewProc("RegCloseKey")
+	procRegSetValueEx   = advapi32.NewProc("RegSetValueExW")
+	procRegDeleteValue  = advapi32.NewProc("RegDeleteValueW")
+	procRegCloseKey     = advapi32.NewProc("RegCloseKey")
 
 	wininet            = syscall.NewLazyDLL("wininet.dll")
 	procInternetSetOpt = wininet.NewProc("InternetSetOptionW")
@@ -27,8 +27,8 @@ const (
 	keyQueryValue   = 0x0001
 	keySetValue     = 0x0002
 
-	regSZ      = 1
-	regDWORD   = 4
+	regSZ    = 1
+	regDWORD = 4
 
 	internetOptionRefresh         = 37
 	internetOptionSettingsChanged = 39
@@ -151,22 +151,22 @@ type SysProxy struct{ mu sync.Mutex }
 func NewSysProxy() *SysProxy { return &SysProxy{} }
 
 const (
-	valEnable   = "ProxyEnable"
-	valServer   = "ProxyServer"
-	valBypass   = "ProxyOverride"
-	valAutoCfg  = "AutoConfigURL"
+	valEnable  = "ProxyEnable"
+	valServer  = "ProxyServer"
+	valBypass  = "ProxyOverride"
+	valAutoCfg = "AutoConfigURL"
 )
 
 // ProxySnapshot 记录开启代理前的原始设置，用于关闭时精确还原。
 type ProxySnapshot struct {
-	Enable      uint32
-	Server      string
-	Bypass      string
-	AutoCfg     string
-	HasEnable   bool
-	HasServer   bool
-	HasBypass   bool
-	HasAuto     bool
+	Enable    uint32
+	Server    string
+	Bypass    string
+	AutoCfg   string
+	HasEnable bool
+	HasServer bool
+	HasBypass bool
+	HasAuto   bool
 }
 
 func (s *SysProxy) Snapshot() ProxySnapshot {
