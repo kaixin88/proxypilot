@@ -10,13 +10,13 @@ import (
 
 // PACServer 提供本地 PAC 脚本，实现「指定国外网址才走代理」与「指定网站走代理」两种模式。
 type PACServer struct {
-	mu       sync.RWMutex
-	mode     string   // gfw=国外才走代理; rules=仅列表走代理
-	rules    []string // 用户规则列表（支持 ip、域名、通配符 *）
+	mu        sync.RWMutex
+	mode      string   // gfw=国外才走代理; rules=仅列表走代理
+	rules     []string // 用户规则列表（支持 ip、域名、通配符 *）
 	proxyHost string
 	proxyPort int
-	srv      *http.Server
-	port     int
+	srv       *http.Server
+	port      int
 }
 
 func NewPACServer(proxyHost string, proxyPort int) *PACServer {
