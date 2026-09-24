@@ -1,0 +1,20 @@
+# 编译产物
+/dist/
+/proxypilot
+*.exe
+*.test
+
+# 运行时数据
+/data/
+/data_test/
+/bin/
+
+# 内核二进制（体积大，不入库）
+*.dat
+*.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
