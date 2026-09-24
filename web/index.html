@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ProxyPilot · 代理控制台</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --line:#e6e8ec; --line2:#eef0f3;
+    --text:#1b1f27; --sub:#6b7280; --hint:#9aa1ab;
+    --brand:#2f6df6; --brand-soft:#eef4ff;
+    --ok:#12a150; --ok-soft:#e9f8ef;
+    --warn:#d97706; --warn-soft:#fff7e8;
+    --bad:#e5484d; --bad-soft:#fdeeee;
+    --radius:14px; --shadow:0 1px 2px rgba(16,24,40,.04),0 6px 20px rgba(16,24,40,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--text); font-size:14px; line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:940px;margin:0 auto;padding:26px 20px 60px}
+
+  /* ---- 顶栏 ---- */
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+  .brand{display:flex;align-items:center;gap:11px}
+  .logo{
+    width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#2f6df6,#5b8dff);
+    display:grid;place-items:center;color:#fff;font-weight:700;font-size:16px;
+    box-shadow:0 4px 12px rgba(47,109,246,.28);
+  }
+  .brand h1{font-size:17px;font-weight:650;letter-spacing:-.2px}
+  .brand p{font-size:12px;color:var(--hint)}
+  .status-pill{
+    display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:999px;
+    background:var(--card);border:1px solid var(--line);font-size:13px;font-weight:550;
+    box-shadow:var(--shadow);
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:#c6cad2}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft)}
+  .dot.err{background:var(--bad);box-shadow:0 0 0 3px var(--bad-soft)}
+
+  /* ---- 卡片 ---- */
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden;
+  }
+  .card-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:15px 18px;border-bottom:1px solid var(--line2);
+  }
+  .card-head h2{font-size:14px;font-weight:620;display:flex;align-items:center;gap:8px}
+  .card-head h2 .ico{font-size:15px}
+  .card-body{padding:18px}
+
+  /* ---- 主控 ---- */
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .hero-info h3{font-size:20px;font-weight:660;letter-spacing:-.3px;margin-bottom:4px}
+  .hero-info p{font-size:13px;color:var(--sub)}
+  .hero-info .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--hint)}
+
+  button{font-family:inherit;font-size:13px;cursor:pointer;border:none;outline:none;transition:.15s}
+  .btn-primary{
+    padding:12px 34px;border-radius:11px;font-size:15px;font-weight:620;color:#fff;
+    background:linear-gradient(135deg,#2f6df6,#4a7ff7);
+    box-shadow:0 5px 16px rgba(47,109,246,.3);
+  }
+  .btn-primary:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(47,109,246,.36)}
+  .btn-primary:active{transform:translateY(0)}
+  .btn-primary.off{background:linear-gradient(135deg,#1b1f27,#3a4150);box-shadow:0 5px 16px rgba(27,31,39,.24)}
+  .btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none}
+
+  .btn-ghost{
+    padding:8px 15px;border-radius:9px;background:#fff;border:1px solid var(--line);
+    color:var(--text);font-weight:550;
+  }
+  .btn-ghost:hover{background:#fafbfc;border-color:#d7dbe2}
+  .btn-soft{
+    padding:7px 13px;border-radius:8px;background:var(--brand-soft);color:var(--brand);
+    font-weight:580;font-size:12.5px;
+  }
+  .btn-soft:hover{background:#e3edff}
+
+  /* ---- 模式选择 ---- */
+  .modes{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+  .mode{
+    padding:14px;border:1.5px solid var(--line);border-radius:11px;background:#fff;
+    cursor:pointer;transition:.16s;text-align:left;
+  }
+  .mode:hover{border-color:#cfd8e8;background:#fbfcfe}
+  .mode.active{border-color:var(--brand);background:var(--brand-soft)}
+  .mode .t{font-weight:600;font-size:13.5px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+  .mode.active .t{color:var(--brand)}
+  .mode .d{font-size:12px;color:var(--sub);line-height:1.5}
+
+  /* ---- 节点列表 ---- */
+  .node-list{max-height:360px;overflow-y:auto}
+  .node-list::-webkit-scrollbar{width:8px}
+  .node-list::-webkit-scrollbar-thumb{background:#dce0e6;border-radius:4px}
+  .node{
+    display:flex;align-items:center;gap:12px;padding:11px 18px;
+    border-bottom:1px solid var(--line2);cursor:pointer;transition:.12s;
+  }
+  .node:last-child{border-bottom:none}
+  .node:hover{background:#fafbfc}
+  .node.sel{background:var(--brand-soft)}
+  .node .radio{
+    width:16px;height:16px;border-radius:50%;border:2px solid #cfd5dd;flex:none;position:relative;
+  }
+  .node.sel .radio{border-color:var(--brand)}
+  .node.sel .radio::after{
+    content:"";position:absolute;inset:3px;border-radius:50%;background:var(--brand);
+  }
+  .node .meta{flex:1;min-width:0}
+  .node .name{font-weight:550;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .node .sub{font-size:11.5px;color:var(--hint);font-family:ui-monospace,Consolas,monospace}
+  .tag{
+    font-size:11px;padding:2.5px 8px;border-radius:6px;font-weight:600;white-space:nowrap;
+    background:var(--line2);color:var(--sub);
+  }
+  .tag.hysteria,.tag.hysteria2{background:#f3ecff;color:#7c3aed}
+  .tag.vless,.tag.vmess{background:#e8f2ff;color:#2563eb}
+  .tag.trojan{background:#fdeeee;color:#dc2626}
+  .tag.ss{background:#e9f8ef;color:#059669}
+  .lat{font-size:11.5px;font-weight:620;font-family:ui-monospace,monospace;white-space:nowrap}
+  .lat.good{color:var(--ok)} .lat.mid{color:var(--warn)} .lat.bad{color:var(--bad)}
+
+  /* ---- 规则区 ---- */
+  textarea{
+    width:100%;min-height:110px;padding:12px;border:1px solid var(--line);border-radius:10px;
+    font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.6;
+    resize:vertical;outline:none;color:var(--text);background:#fbfcfd;
+  }
+  textarea:focus{border-color:var(--brand);background:#fff}
+  .hint{font-size:12px;color:var(--hint);margin-top:8px;line-height:1.6}
+  code{background:var(--line2);padding:1.5px 6px;border-radius:5px;font-size:11.5px;font-family:ui-monospace,monospace}
+
+  /* ---- Toast ---- */
+  #toast{
+    position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(80px);
+    background:#1b1f27;color:#fff;padding:11px 22px;border-radius:10px;font-size:13px;
+    opacity:0;transition:.28s;pointer-events:none;z-index:99;box-shadow:0 8px 26px rgba(0,0,0,.22);
+    max-width:80vw;text-align:center;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  .row{display:flex;align-items:center;gap:10px}
+  .grow{flex:1}
+  .empty{padding:34px;text-align:center;color:var(--hint);font-size:13px}
+  .spinner{
+    width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--brand);
+    border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:-2px;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .kpi{display:flex;gap:22px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line2)}
+  .kpi div{font-size:12px;color:var(--hint)}
+  .kpi b{display:block;font-size:15px;color:var(--text);font-weight:640;margin-bottom:1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo">P</div>
+      <div>
+        <h1>ProxyPilot</h1>
+        <p>自动节点 · 一键代理 · Windows 10 / 11</p>
+      </div>
+    </div>
+    <div class="status-pill"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
+  </header>
+
+  <!-- 主控 -->
+  <div class="card">
+    <div class="card-body hero">
+      <div class="hero-info">
+        <h3 id="heroTitle">代理未开启</h3>
+        <p id="heroSub">选择一个节点，然后点击右侧按钮</p>
+        <p class="mono" id="heroMono">本地代理端口 127.0.0.1:7897</p>
+      </div>
+      <button class="btn-primary" id="mainBtn">开启代理</button>
+    </div>
+  </div>
+
+  <!-- 节点 -->
+  <div class="card">
+    <div class="card-head">
+      <h2><span class="ico">🌐</span>代理节点 <span class="tag" id="nodeCount">0</span></h2>
+      <div class="row">
+        <span id="syncHint" class="hint" style="margin:0"></span>
+        <button class="btn-soft" id="btnSync">获取节点</button>
+        <button class="btn-ghost" id="btnProbe">测速</button>
+      </div>
+    </div>
+    <div class="node-list" id="nodeList">
+      <div class="empty">正在载入节点…</div>
+    </div>
+  </div>
+
+  <!-- 模式 -->
+  <div class="card">
+    <div class="card-head"><h2><span class="ico">⚙️</span>代理模式</h2></div>
+    <div class="card-body">
+      <div class="modes">
+        <button class="mode" data-mode="global">
+          <div class="t">🌍 全局代理</div>
+          <div class="d">除本地与内网外，所有流量都走代理</div>
+        </button>
+        <button class="mode" data-mode="gfw">
+          <div class="t">🚀 智能分流</div>
+          <div class="d">只让国外网址走代理，国内直连</div>
+        </button>
+        <button class="mode" data-mode="rules">
+          <div class="t">🎯 自定义规则</div>
+          <div class="d">仅规则列表中的网站 / IP 走代理</div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 规则 -->
+  <div class="card" id="rulesCard" style="display:none">
+    <div class="card-head">
+      <h2><span class="ico">📝</span>规则列表</h2>
+      <button class="btn-soft" id="btnSaveRules">保存并生效</button>
+    </div>
+    <div class="card-body">
+      <textarea id="rulesText" spellcheck="false" placeholder="每行一条，例如：&#10;google.com&#10;*.githubusercontent.com&#10;youtube.com&#10;1.1.1.1&#10;104.16.0.0/12"></textarea>
+      <div class="hint">
+        支持三类写法：<code>域名后缀</code>（如 <code>google.com</code>）、
+        <code>通配符</code>（如 <code>*.github.com</code>）、<code>IP / CIDR</code>（如 <code>8.8.8.8</code>、<code>104.16.0.0/12</code>）。
+        以 <code>#</code> 开头的行会被忽略。保存后立即生效，无需重启。
+      </div>
+    </div>
+  </div>
+
+  <!-- 内核信息 -->
+  <div class="card">
+    <div class="card-head">
+      <h2><span class="ico">🧩</span>运行环境</h2>
+      <div class="row">
+        <button class="btn-ghost" id="btnOpenBin">打开内核目录</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="kpi">
+        <div>内核<b id="kpiKernel">—</b></div>
+        <div>本地 HTTP<b id="kpiHttp">—</b></div>
+        <div>本地 SOCKS5<b id="kpiSocks">—</b></div>
+        <div>PAC 地址<b id="kpiPac" style="font-size:12px">—</b></div>
+      </div>
+      <div class="hint" id="kernelHint"></div>
+    </div>
+  </div>
+
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = {enabled:false, mode:'gfw', nodeID:'', rules:[], kernel:'clash.meta'};
+let nodes = [];
+let busy = false;
+
+function toast(msg, ms=2600){
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(()=>t.classList.remove('show'), ms);
+}
+
+async function api(path, body){
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+async function refresh(){
+  try{
+    state = await api('/api/state');
+    render();
+  }catch(e){ /* 服务未就绪 */ }
+}
+
+async function loadNodes(){
+  const r = await api('/api/nodes');
+  nodes = r.nodes || [];
+  renderNodes();
+}
+
+function render(){
+  const on = state.enabled;
+  $('#dot').className = 'dot' + (state.lastErr ? ' err' : (on ? ' on' : ''));
+  $('#statusText').textContent = on ? (state.lastErr ? '异常' : '运行中') : '未连接';
+  $('#mainBtn').textContent = on ? '关闭代理' : '开启代理';
+  $('#mainBtn').classList.toggle('off', on);
+  $('#mainBtn').disabled = busy;
+
+  // hero
+  $('#heroTitle').textContent = on ? '代理已开启' : '代理未开启';
+  const sel = nodes.find(n=>n.id===state.nodeID);
+  if(on && sel){
+    $('#heroSub').textContent = `${sel.name} · ${sel.protocol} · ${sel.server}:${sel.port}`;
+  } else {
+    $('#heroSub').textContent = sel ? `已选择：${sel.name}` : '选择一个节点，然后点击右侧按钮';
+  }
+  $('#heroMono').textContent = `本地代理 127.0.0.1:${state.proxyPort||7897} · PAC ${state.pacURL||''}`;
+
+  // 节点数
+  $('#nodeCount').textContent = (state.nodeCount||nodes.length) ;
+  if(state.syncing){
+    $('#syncHint').innerHTML = `<span class="spinner"></span> ${state.progress||'同步中'}`;
+  } else {
+    $('#syncHint').textContent = state.lastSync ? '上次更新 '+state.lastSync : '';
+  }
+
+  // 模式
+  document.querySelectorAll('.mode').forEach(m=>{
+    m.classList.toggle('active', m.dataset.mode === state.mode);
+  });
+  $('#rulesCard').style.display = state.mode==='rules' ? '' : 'none';
+  if(state.mode==='rules' && document.activeElement !== $('#rulesText')){
+    $('#rulesText').value = (state.rules||[]).join('\n');
+  }
+
+  // 环境
+  const k = state.kernels||{};
+  $('#kpiKernel').textContent = state.kernel || '—';
+  $('#kpiHttp').textContent = ':'+(state.proxyPort||7897);
+  $('#kpiSocks').textContent = ':'+(state.socksPort||7898);
+  $('#kpiPac').textContent = (state.pacURL||'').replace('http://','');
+  const have = Object.keys(k);
+  $('#kernelHint').innerHTML = have.length
+    ? '已检测到内核：' + have.map(x=>`<code>${x}</code>`).join(' ')
+    : '未检测到内核文件。请把 <code>xray.exe</code> 或 <code>clash.meta.exe</code> 放到程序目录下的 <code>bin</code> 文件夹，然后重新开启代理。';
+}
+
+function renderNodes(){
+  const box = $('#nodeList');
+  if(!nodes.length){
+    box.innerHTML = '<div class="empty">暂无节点，点击右上角「获取节点」自动拉取</div>';
+    return;
+  }
+  box.innerHTML = nodes.map(n=>{
+    const lat = n.latency;
+    let latCls = '', latTxt = '未测';
+    if(lat === -1){ latCls='bad'; latTxt='不可用'; }
+    else if(lat > 0){ latCls = lat<300?'good':(lat<800?'mid':'bad'); latTxt = lat+' ms'; }
+    return `<div class="node ${n.id===state.nodeID?'sel':''}" data-id="${n.id}">
+      <div class="radio"></div>
+      <div class="meta">
+        <div class="name">${esc(n.name)}</div>
+        <div class="sub">${esc(n.server)}:${n.port} · ${esc(n.source||'')}</div>
+      </div>
+      <span class="tag ${esc(n.protocol)}">${esc(n.protocol)}</span>
+      <span class="lat ${latCls}">${latTxt}</span>
+    </div>`;
+  }).join('');
+
+  box.querySelectorAll('.node').forEach(el=>{
+    el.onclick = async ()=>{
+      await api('/api/nodes/select', {id: el.dataset.id});
+      state.nodeID = el.dataset.id;
+      renderNodes(); render();
+      toast('已选择节点' + (state.enabled?'，正在切换':''));
+      setTimeout(refresh, 700);
+    };
+  });
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---- 事件 ----
+$('#mainBtn').onclick = async ()=>{
+  busy = true;
+  $('#mainBtn').disabled = true;
+  $('#mainBtn').innerHTML = `<span class="spinner"></span> ${state.enabled?'关闭中':'启动中'}`;
+  const r = state.enabled ? await api('/api/off') : await api('/api/on', {mode:state.mode, rules:state.rules});
+  busy = false;
+  if(r && r.ok === false){ toast('失败：'+(r.error||'未知错误'), 4200); }
+  else if(r && r.warn){ toast('已开启，但'+r.warn, 4200); }
+  else { toast(state.enabled ? '代理已关闭' : '代理已开启'); }
+  await refresh();
+  $('#mainBtn').innerHTML = state.enabled ? '关闭代理' : '开启代理';
+  $('#mainBtn').disabled = false;
+};
+
+$('#btnSync').onclick = async ()=>{
+  $('#btnSync').innerHTML = '<span class="spinner"></span> 获取中';
+  await api('/api/sync?probe=1');
+  toast('正在从云端获取最新节点…');
+  const timer = setInterval(async ()=>{
+    await refresh(); await loadNodes();
+    if(!state.syncing){ clearInterval(timer); $('#btnSync').textContent='获取节点'; toast(`节点已更新，共 ${nodes.length} 个`); }
+  }, 1000);
+};
+
+$('#btnProbe').onclick = async ()=>{
+  $('#btnProbe').innerHTML = '<span class="spinner"></span> 测速';
+  await api('/api/probe');
+  toast('正在探测节点延迟…');
+  const timer = setInterval(async ()=>{
+    await loadNodes();
+    if(nodes.some(n=>n.latency!==0)){ clearInterval(timer); $('#btnProbe').textContent='测速'; }
+  }, 1200);
+  setTimeout(()=>{ clearInterval(timer); $('#btnProbe').textContent='测速'; }, 12000);
+};
+
+document.querySelectorAll('.mode').forEach(m=>{
+  m.onclick = async ()=>{
+    state.mode = m.dataset.mode;
+    await api('/api/mode', {mode:state.mode, rules:state.rules});
+    render();
+    toast('已切换到「'+m.querySelector('.t').textContent.trim()+'」');
+    setTimeout(refresh, 500);
+  };
+});
+
+$('#btnSaveRules').onclick = async ()=>{
+  const text = $('#rulesText').value;
+  const r = await api('/api/rules', {text});
+  state.rules = r.rules || [];
+  toast('规则已保存并生效');
+};
+
+$('#btnOpenBin').onclick = ()=> api('/api/openfolder', {which:'bin'});
+
+// ---- 轮询 ----
+loadNodes().then(refresh);
+setInterval(async ()=>{
+  await refresh();
+  if(state.syncing || nodes.some(n=>n.latency===0)) await loadNodes();
+}, 2000);
+</script>
+</body>
+</html>
