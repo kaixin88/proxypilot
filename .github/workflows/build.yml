@@ -36,6 +36,20 @@ jobs:
             Copy-Item $exe.FullName $k -Force
           }
           Write-Output "内核大小: $((Get-Item $k).Length) bytes"
+
+          # 分流规则需要 GeoIP / GeoSite 数据；缺失时内核会跳过国内直连规则
+          foreach ($pair in @(
+              @{ name = "geoip.dat";   url = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat" },
+              @{ name = "geosite.dat"; url = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat" }
+          )) {
+            $dst = Join-Path "bin" $pair.name
+            if ((Test-Path $dst) -and ((Get-Item $dst).Length -gt 1MB)) {
+              Write-Output "复用已有 $($pair.name)"
+            } else {
+              Write-Output "下载 $($pair.name) ..."
+              Invoke-WebRequest -Uri $pair.url -OutFile $dst -UseBasicParsing
+            }
+          }
           Get-ChildItem bin | Select-Object Name, Length
 
       - name: Build (amd64, WebView2 native window, cgo)
@@ -64,6 +78,8 @@ jobs:
           Copy-Item dist/ProxyPilot-debug.exe pkg/ProxyPilot-debug.exe
           Copy-Item README.md                 pkg/README.md
           Copy-Item bin/clash.meta.exe        pkg/bin/clash.meta.exe
+          if (Test-Path "bin/geoip.dat")   { Copy-Item bin/geoip.dat   pkg/bin/geoip.dat }
+          if (Test-Path "bin/geosite.dat") { Copy-Item bin/geosite.dat pkg/bin/geosite.dat }
           Compress-Archive -Path pkg/* -DestinationPath dist/ProxyPilot-win.zip -Force
           Write-Output "--- package contents ---"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
