@@ -1,0 +1,18 @@
+把代理内核放到这个 bin 目录里，然后重新启动 ProxyPilot.exe。
+
+ProxyPilot 本身只负责：抓节点 → 测速 → 写系统代理 → 起本地 PAC 服务。
+真正的“翻墙内核”需要你自己提供，放在这里的 bin 目录即可。
+
+推荐（支持协议最全，含 hysteria / hysteria2 / vless / vmess / trojan / ss）:
+  clash.meta.exe        （下载 Clash.Meta / mihomo 的 windows 版，重命名即可）
+
+或者（只支持 vless / vmess / trojan / shadowsocks）:
+  xray.exe
+  geoip.dat
+  geosite.dat
+
+可以直接从你已有的 Chrome153_AllNew_2026.9.12 目录里复制：
+  Chrome153_AllNew_2026.9.12\clash.meta\clash.meta-windows-386.exe  ->  bin\clash.meta.exe
+  Chrome153_AllNew_2026.9.12\Xray\xray.exe                          ->  bin\xray.exe
+
+放好后重启 ProxyPilot.exe，界面上“运行环境”一栏会显示检测到的内核。
