@@ -49,12 +49,73 @@ func (k *KernelManager) FindBinary(names ...string) (string, string) {
 	return "", ""
 }
 
+// findKernelExe 按关键字模糊匹配内核可执行文件。
+// 用户手上的内核命名五花八门（clash.meta-windows.exe / mihomo-windows-amd64.exe
+// / clash.meta-windows-386.exe ...），只按固定文件名找会漏掉，所以改为扫描目录。
+// exclude 用于避免把 xray 认成 clash（反之亦然）。
+func (k *KernelManager) findKernelExe(keywords []string, exclude []string) (string, string) {
+	dirs := []string{k.binDir, filepath.Join(k.workDir, "bin"), k.workDir}
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			lower := strings.ToLower(e.Name())
+			if !strings.HasSuffix(lower, ".exe") {
+				continue
+			}
+			// 跳过本程序与内核无关的工具
+			if strings.Contains(lower, "proxypilot") {
+				continue
+			}
+			matched := false
+			for _, kw := range keywords {
+				if strings.Contains(lower, kw) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			bad := false
+			for _, ex := range exclude {
+				if strings.Contains(lower, ex) {
+					bad = true
+					break
+				}
+			}
+			if bad {
+				continue
+			}
+			return filepath.Join(d, e.Name()), d
+		}
+	}
+	return "", ""
+}
+
 func (k *KernelManager) Available() map[string]string {
 	out := map[string]string{}
 	if p, _ := k.FindBinary("xray.exe", "xray-windows-amd64.exe"); p != "" {
 		out["xray"] = p
+	} else if p, _ := k.findKernelExe([]string{"xray"}, []string{"clash", "mihomo"}); p != "" {
+		out["xray"] = p
 	}
 	if p, _ := k.FindBinary("clash.meta.exe", "clash.meta-windows-amd64.exe", "clash-meta.exe", "mihomo.exe"); p != "" {
+		out["clash.meta"] = p
+	} else if p, _ := k.findKernelExe(
+		[]string{"clash.meta", "clash-meta", "clashmeta", "mihomo", "clash.meta-windows"},
+		[]string{"xray", "v2ray"},
+	); p != "" {
 		out["clash.meta"] = p
 	}
 	return out
@@ -82,9 +143,15 @@ func (k *KernelManager) Start(kernel string, node Node, mode string, rules []str
 
 	switch kernel {
 	case "xray":
-		bin, _ := k.FindBinary("xray.exe", "xray-windows-amd64.exe")
+		bin, binDir := k.FindBinary("xray.exe", "xray-windows-amd64.exe")
+		if bin == "" {
+			bin, binDir = k.findKernelExe([]string{"xray"}, []string{"clash", "mihomo"})
+		}
 		if bin == "" {
 			return fmt.Errorf("未找到 xray.exe，请把内核放到程序目录或 bin 子目录")
+		}
+		if binDir == "" {
+			binDir = filepath.Dir(bin)
 		}
 		cfgPath := filepath.Join(k.workDir, "xray_runtime.json")
 		cfg := buildXrayConfig(node, mode, rules)
@@ -92,9 +159,10 @@ func (k *KernelManager) Start(kernel string, node Node, mode string, rules []str
 		if err := os.WriteFile(cfgPath, b, 0o644); err != nil {
 			return err
 		}
-		// 复制 geo 数据（若内核目录存在）
+		// xray 在自身目录查找 geoip.dat / geosite.dat
+		k.copyGeoData(k.workDir, binDir)
 		cmd := exec.Command(bin, "run", "-c", cfgPath)
-		cmd.Dir = filepath.Dir(bin)
+		cmd.Dir = binDir
 		cmd.SysProcAttr = hiddenProcAttr()
 		if err := cmd.Start(); err != nil {
 			return err
@@ -105,14 +173,26 @@ func (k *KernelManager) Start(kernel string, node Node, mode string, rules []str
 	case "clash.meta":
 		bin, binDir := k.FindBinary("clash.meta.exe", "clash.meta-windows-amd64.exe", "clash-meta.exe", "mihomo.exe")
 		if bin == "" {
+			bin, binDir = k.findKernelExe(
+				[]string{"clash.meta", "clash-meta", "clashmeta", "mihomo"},
+				[]string{"xray", "v2ray"},
+			)
+		}
+		if bin == "" {
 			return fmt.Errorf("未找到 clash.meta 内核，请把 clash.meta.exe 放到程序目录或 bin 子目录")
+		}
+		if binDir == "" {
+			binDir = filepath.Dir(bin)
 		}
 		cfgPath := filepath.Join(k.workDir, "clash_runtime.yaml")
 		cfg := buildClashConfig(node, mode, rules)
 		if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 			return err
 		}
-		cmd := exec.Command(bin, "-d", filepath.Dir(cfgPath), "-f", cfgPath)
+		// clash.meta 会在配置目录里找 Country.mmdb / GeoSite.dat，
+		// 而用户通常把它们和内核放在一起，这里补齐到运行目录，否则内核起不来。
+		k.copyGeoData(binDir, k.workDir)
+		cmd := exec.Command(bin, "-d", k.workDir, "-f", cfgPath)
 		cmd.Dir = binDir
 		cmd.SysProcAttr = hiddenProcAttr()
 		if err := cmd.Start(); err != nil {
@@ -137,6 +217,33 @@ func (k *KernelManager) Stop() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.stopLocked()
+}
+
+// copyGeoData 把内核目录里的 GeoIP/GeoSite 数据复制到运行目录。
+// clash.meta 从 `-d` 指定的目录读取 geosite.dat / geoip.dat（或 Country.mmdb），
+// 缺失时启动会尝试联网下载，离线环境下会直接报错退出。
+func (k *KernelManager) copyGeoData(srcDir, dstDir string) {
+	if srcDir == "" || dstDir == "" || srcDir == dstDir {
+		return
+	}
+	names := []string{
+		"geosite.dat", "GeoSite.dat",
+		"geoip.dat", "GeoIP.dat",
+		"geoip.metadb", "Country.mmdb", "country.mmdb",
+	}
+	for _, n := range names {
+		src := filepath.Join(srcDir, n)
+		if st, err := os.Stat(src); err != nil || st.IsDir() {
+			continue
+		}
+		dst := filepath.Join(dstDir, n)
+		if _, err := os.Stat(dst); err == nil {
+			continue // 已存在，不覆盖
+		}
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(dst, data, 0o644)
+		}
+	}
 }
 
 func (k *KernelManager) stopLocked() {
@@ -270,7 +377,7 @@ func xrayOutbound(node Node) map[string]any {
 			}
 		} else if node.Security == "tls" {
 			stream["tlsSettings"] = map[string]any{
-				"serverName": node.Raw["sni"],
+				"serverName":    node.Raw["sni"],
 				"allowInsecure": node.Raw["skip-cert-verify"] == "true",
 			}
 		}
@@ -308,7 +415,7 @@ func xrayOutbound(node Node) map[string]any {
 				}},
 			},
 			"streamSettings": map[string]any{
-				"network": firstNonEmpty(node.Transport, "tcp"),
+				"network":  firstNonEmpty(node.Transport, "tcp"),
 				"security": firstNonEmpty(node.Security, "none"),
 			},
 		}
@@ -349,41 +456,20 @@ func buildClashConfig(node Node, mode string, rules []string) string {
 	sb.WriteString("allow-lan: false\n")
 	sb.WriteString("mode: rule\n")
 	sb.WriteString("log-level: warning\n")
+	// 用 .dat 版 GeoIP/GeoSite，并禁止内核联网下载。
+	// 默认 MMDB 模式在找不到 Country.mmdb 时会尝试联网下载，
+	// 受限网络下会卡住导致端口起不来（表现为"端口未就绪"）。
+	sb.WriteString("geodata-mode: true\n")
+	sb.WriteString("geodata-loader: standard\n")
+	sb.WriteString("geo-auto-update: false\n")
 	sb.WriteString("dns:\n  enable: true\n  listen: 127.0.0.1:0\n")
 	sb.WriteString("  nameserver:\n    - 119.29.29.29\n    - 223.5.5.5\n")
 	sb.WriteString("  fallback:\n    - 8.8.8.8\n    - 1.1.1.1\n")
 
 	sb.WriteString("proxies:\n")
 	sb.WriteString(fmt.Sprintf("  - name: ProxyPilotNode\n    type: %s\n    server: %s\n    port: %d\n",
-		clashType(node.Protocol), node.Server, node.Port))
-	switch strings.ToLower(node.Protocol) {
-	case "hysteria", "hysteria2":
-		if node.Raw["auth-str"] != "" {
-			sb.WriteString("    auth-str: " + node.Raw["auth-str"] + "\n")
-		}
-		if node.Raw["auth_str"] != "" {
-			sb.WriteString("    auth-str: " + node.Raw["auth_str"] + "\n")
-		}
-		if node.Raw["password"] != "" {
-			sb.WriteString("    password: " + node.Raw["password"] + "\n")
-		}
-		if node.Raw["sni"] != "" {
-			sb.WriteString("    sni: " + node.Raw["sni"] + "\n")
-		}
-		sb.WriteString("    skip-cert-verify: true\n    alpn:\n      - h3\n")
-	case "ss", "shadowsocks":
-		sb.WriteString("    cipher: " + firstNonEmpty(node.Raw["cipher"], node.Raw["method"]) + "\n")
-		sb.WriteString("    password: " + node.Raw["password"] + "\n")
-	case "vless":
-		sb.WriteString("    uuid: " + node.Raw["id"] + "\n")
-		sb.WriteString("    network: " + firstNonEmpty(node.Transport, "tcp") + "\n")
-		sb.WriteString("    tls: " + boolStr(node.Security == "tls" || node.Security == "reality") + "\n")
-		sb.WriteString("    servername: " + node.Raw["sni"] + "\n")
-	case "trojan":
-		sb.WriteString("    password: " + node.Raw["password"] + "\n")
-		sb.WriteString("    sni: " + node.Raw["sni"] + "\n")
-		sb.WriteString("    skip-cert-verify: true\n")
-	}
+		clashType(node.Protocol), yamlVal(node.Server), node.Port))
+	sb.WriteString(clashProxyExtra(node))
 
 	sb.WriteString("proxy-groups:\n")
 	sb.WriteString("  - name: PROXY\n    type: select\n    proxies:\n      - ProxyPilotNode\n      - DIRECT\n")
@@ -391,13 +477,19 @@ func buildClashConfig(node Node, mode string, rules []string) string {
 	sb.WriteString("rules:\n")
 	switch mode {
 	case "global":
-		sb.WriteString("  - GEOIP,private,DIRECT\n")
-		sb.WriteString("  - GEOSITE,private,DIRECT\n")
+		sb.WriteString("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve\n")
 		sb.WriteString("  - MATCH,PROXY\n")
 	case "gfw":
+		sb.WriteString("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve\n")
+		sb.WriteString("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve\n")
+		// 国内直连：优先用 geo 数据，缺失时内核会跳过该条（非致命）
 		sb.WriteString("  - GEOSITE,cn,DIRECT\n")
 		sb.WriteString("  - GEOIP,CN,DIRECT\n")
-		sb.WriteString("  - GEOSITE,private,DIRECT\n")
 		sb.WriteString("  - MATCH,PROXY\n")
 	case "rules":
 		for _, r := range rules {
@@ -426,8 +518,174 @@ func clashType(proto string) string {
 		return "trojan"
 	case "ss", "shadowsocks":
 		return "ss"
+	case "socks", "socks5":
+		return "socks5"
 	}
 	return strings.ToLower(proto)
+}
+
+// clashProxyExtra 输出各协议在 clash 配置里必需的附加字段。
+//
+// 这一步非常关键：内核会对缺失字段直接 fatal 退出（例如
+// mieru 要求 username/password/transport），表现为"端口未就绪"，
+// 用户完全无法理解。所以每个支持的协议都必须补齐自己的必填项。
+func clashProxyExtra(node Node) string {
+	var b strings.Builder
+	w := func(k, v string) {
+		if v != "" {
+			b.WriteString("    " + k + ": " + yamlVal(v) + "\n")
+		}
+	}
+	wb := func(k string, v bool) {
+		b.WriteString("    " + k + ": " + boolStr(v) + "\n")
+	}
+	raw := node.Raw
+	proto := strings.ToLower(node.Protocol)
+
+	switch proto {
+	case "hysteria", "hysteria2":
+		w("auth-str", firstNonEmpty(raw["auth-str"], raw["auth_str"]))
+		w("auth", firstNonEmpty(raw["auth"], raw["password"]))
+		w("password", raw["password"])
+		w("sni", firstNonEmpty(raw["sni"], raw["peer"]))
+		w("obfs", raw["obfs"])
+		w("obfs-password", raw["obfs-password"])
+		w("up", firstNonEmpty(raw["up"], raw["upmbps"]))
+		w("down", firstNonEmpty(raw["down"], raw["downmbps"]))
+		wb("skip-cert-verify", true)
+
+	case "ss", "shadowsocks":
+		w("cipher", firstNonEmpty(raw["cipher"], raw["method"]))
+		w("password", raw["password"])
+		w("plugin", raw["plugin"])
+		w("plugin-opts", raw["plugin-opts"])
+
+	case "ssr":
+		w("cipher", firstNonEmpty(raw["cipher"], raw["method"]))
+		w("password", raw["password"])
+		w("protocol", raw["protocol"])
+		w("obfs", raw["obfs"])
+		w("protocol-param", raw["protocol-param"])
+		w("obfs-param", raw["obfs-param"])
+
+	case "vmess":
+		w("uuid", firstNonEmpty(raw["uuid"], raw["id"]))
+		w("alterId", firstNonEmpty(raw["alterId"], "0"))
+		w("cipher", firstNonEmpty(raw["cipher"], "auto"))
+		w("network", firstNonEmpty(node.Transport, raw["network"], "tcp"))
+		w("servername", raw["sni"])
+		writeWSOpts(&b, raw, node)
+
+	case "vless":
+		w("uuid", firstNonEmpty(raw["uuid"], raw["id"]))
+		w("network", firstNonEmpty(node.Transport, raw["network"], "tcp"))
+		w("flow", raw["flow"])
+		w("servername", firstNonEmpty(raw["sni"], raw["servername"]))
+		w("client-fingerprint", raw["fp"])
+		w("reality-opts", "")
+		if node.Security == "reality" || raw["pbk"] != "" {
+			b.WriteString("    reality-opts:\n")
+			if pbk := firstNonEmpty(raw["pbk"], raw["public-key"]); pbk != "" {
+				b.WriteString("      public-key: " + yamlVal(pbk) + "\n")
+			}
+			if sid := raw["sid"]; sid != "" {
+				b.WriteString("      short-id: " + yamlVal(sid) + "\n")
+			}
+		}
+		wb("tls", node.Security == "tls" || node.Security == "reality")
+		wb("skip-cert-verify", true)
+		writeWSOpts(&b, raw, node)
+
+	case "trojan":
+		w("password", raw["password"])
+		w("sni", firstNonEmpty(raw["sni"], raw["peer"]))
+		w("network", firstNonEmpty(node.Transport, raw["network"]))
+		w("alpn", raw["alpn"])
+		wb("skip-cert-verify", true)
+		writeWSOpts(&b, raw, node)
+
+	case "mieru":
+		// mieru 三个必填：username / password / transport
+		w("username", firstNonEmpty(raw["username"], raw["user"]))
+		w("password", raw["password"])
+		// clash 要求大写 TCP/UDP
+		w("transport", strings.ToUpper(firstNonEmpty(raw["transport"], node.Transport, "TCP")))
+		wb("skip-cert-verify", true)
+
+	case "anytls":
+		w("password", raw["password"])
+		w("sni", firstNonEmpty(raw["sni"], raw["peer"]))
+		wb("skip-cert-verify", true)
+
+	case "tuic":
+		w("uuid", firstNonEmpty(raw["uuid"], raw["id"]))
+		w("password", raw["password"])
+		w("sni", firstNonEmpty(raw["sni"], raw["peer"]))
+		w("alpn", raw["alpn"])
+		wb("skip-cert-verify", true)
+
+	case "snell":
+		w("psk", firstNonEmpty(raw["psk"], raw["password"]))
+		w("version", firstNonEmpty(raw["version"], "1"))
+
+	case "socks5", "http":
+		w("username", firstNonEmpty(raw["username"], raw["user"]))
+		w("password", raw["password"])
+		wb("tls", node.Security == "tls")
+
+	case "wireguard":
+		w("private-key", firstNonEmpty(raw["private-key"], raw["secretKey"]))
+		w("public-key", raw["public-key"])
+		w("server", node.Server)
+		w("pre-shared-key", raw["pre-shared-key"])
+		w("ip", raw["ip"])
+		w("reserved", raw["reserved"])
+		w("mtu", raw["mtu"])
+		w("udp", "true")
+	}
+	return b.String()
+}
+
+// writeWSOpts 输出 ws/grpc/h2 等传输层参数。
+func writeWSOpts(b *strings.Builder, raw map[string]string, node Node) {
+	net := strings.ToLower(firstNonEmpty(node.Transport, raw["network"]))
+	switch net {
+	case "ws":
+		b.WriteString("    ws-opts:\n")
+		path := firstNonEmpty(raw["path"], "/")
+		b.WriteString("      path: " + yamlVal(path) + "\n")
+		host := firstNonEmpty(raw["host"], raw["sni"])
+		if host != "" {
+			b.WriteString("      headers:\n        Host: " + yamlVal(host) + "\n")
+		}
+	case "grpc":
+		b.WriteString("    grpc-opts:\n")
+		if sn := firstNonEmpty(raw["serviceName"], raw["servicename"]); sn != "" {
+			b.WriteString("      grpc-service-name: " + yamlVal(sn) + "\n")
+		}
+	case "h2", "http":
+		b.WriteString("    h2-opts:\n")
+		if h := firstNonEmpty(raw["host"]); h != "" {
+			b.WriteString("      host:\n        - " + yamlVal(h) + "\n")
+		}
+		if p := firstNonEmpty(raw["path"], "/"); p != "" {
+			b.WriteString("      path: " + yamlVal(p) + "\n")
+		}
+	}
+}
+
+// yamlVal 对需要引号的值做安全包裹，避免特殊字符破坏 YAML。
+func yamlVal(s string) string {
+	if s == "" {
+		return ""
+	}
+	needQuote := strings.ContainsAny(s, ":#{}[]&*!|>'\"%@`,") ||
+		strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") ||
+		strings.Contains(s, "\n")
+	if !needQuote {
+		return s
+	}
+	return "\"" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "\"", "\\\"") + "\""
 }
 
 func classifyRule(r string) string {
